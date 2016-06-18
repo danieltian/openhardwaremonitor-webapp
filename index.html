@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+
+<head>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/semantic-ui/2.1.8/semantic.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.0.0/jquery.slim.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/semantic-ui/2.1.8/semantic.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/1.0.24/vue.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/2.1.6/Chart.min.js"></script>
+
+  <style>
+    #app {
+      margin: 20px;
+      display: flex;
+    }
+
+    .device {
+      margin-bottom: 20px;
+      margin-right: 20px;
+    }
+
+    .device-sensors {
+      border: 1px solid #e5e5e5;
+    }
+
+    .device-sensor {
+      display: flex;
+      padding: 5px 10px;
+    }
+    .device-sensor:nth-child(even) {
+      background-color: #f8f8f8;
+    }
+    .device-sensor:nth-child(odd) {
+      background-color: #f3f3f4;
+    }
+    .sensor-name {
+      font-weight: bold;
+      margin-right: 5px;
+      display: flex;
+      align-items: center;
+    }
+
+    .temp-scale {
+      width: 200px;
+      height: 33px;
+      position: relative;
+      margin: 10px;
+      border-bottom: 3px solid #dcdcdc;
+    }
+    .range {
+      position: absolute;
+      height: 3px;
+      border-left: 1px solid darkgreen;
+      border-right: 1px solid darkgreen;
+      background-color: yellowgreen;
+    }
+    .value-wrapper {
+      transition: transform 100ms ease-out;
+    }
+    .value {
+      background-color: yellowgreen;
+      padding: 2px 5px;
+      border-radius: 2px;
+      position: relative;
+      display: inline-block;
+      margin-bottom: 7px;
+      transform: translateX(-50%);
+    }
+    .value::after {
+      content: '';
+      position: absolute;
+      bottom: -5px;
+      left: 50%;
+      transform: translateX(-50%);
+      border-top: 5px solid yellowgreen;
+      border-left: 5px solid transparent;
+      border-right: 5px solid transparent;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="app">
+    <div v-for="device in devices" class="device" v-if="device.sensors.length && device.hardwareType == 'CPU' || device.hardwareType == 'GpuAti'">
+      <h1 class="device-name">{{ device.name }} - {{ device.hardwareType }}</h1>
+      <div class="device-sensors">
+        <div class="device-sensor" v-for="sensor in device.sensors" v-if="!sensor.hidden">
+          <div class="sensor-name">{{ sensor.name }} - {{ sensor.sensorType }}:</div>
+          <temp-scale :sensor="sensor"></temp-scale>
+          <sensor-graph :history="sensor.history"></sensor-graph>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <template id="temp-scale">
+    <div class="temp-scale">
+      <div class="value-wrapper" v-bind:style="{ transform: `translateX(${getPercent(sensor.latest)}%)` }">
+        <div class="value">{{ getValue(sensor.latest) }}</div>
+      </div>
+      <div class="range" v-bind:style="{ width: `${getPercent(sensor.max - sensor.min)}%`, left: `${getPercent(sensor.min)}%` }"></div>
+    </div>
+  </template>
+
+  <script>
+    // Get the sensor data from the OpenHardwareMonitor JSON server running on port 8080.
+    function getSensorData() {
+      return new Promise((resolve, reject) => {
+        var xhr = new XMLHttpRequest();
+        xhr.timeout = 1000;
+        xhr.open('GET', 'http://localhost:8080');
+        xhr.send();
+        xhr.onreadystatechange = () => {
+          if (xhr.readyState === 4) {
+            if (xhr.status === 200) {
+              resolve(JSON.parse(xhr.responseText));
+            }
+            else {
+              reject({ statusCode: xhr.status, body: xhr.responseText });
+            }
+          }
+        }
+      });
+    }
+
+    var HardwareType = {
+      Mainboard: 0,
+      SuperIO: 1,
+      CPU: 2,
+      RAM: 3,
+      GpuNvidia: 4,
+      GpuAti: 5,
+      TBalancer: 6,
+      HeatMaster: 7,
+      HDD: 8
+    };
+
+    var SensorType = {
+      Voltage: 0, // V
+      Clock: 1, // MHz
+      Temperature: 2, // °C
+      Load: 3, // %
+      Fan: 4, // RPM
+      Flow: 5, // L/h
+      Control: 6, // %
+      Level: 7, // %
+      Factor: 8, // 1
+      Power: 9, // W
+      Data: 10, // GB = 2^30 Bytes
+    };
+
+    var HardwareTypeArray = Object.keys(HardwareType);
+    var SensorTypeArray = Object.keys(SensorType);
+
+    var devices = [];
+
+    Vue.component('temp-scale', {
+      props: ['sensor'],
+      template: '#temp-scale',
+      methods: {
+        getPercent: function(value) {
+          return (value - this.from) / (this.to - this.from) * 100;
+        },
+        getValue: function(value) {
+          if (this.sensor.max - this.sensor.min < 1) {
+            return value.toFixed(2);
+          }
+          else {
+            return Math.round(value);
+          }
+        }
+      },
+      computed: {
+        from: function() {
+          if (this.sensor.max - this.sensor.min < 1) {
+            return Math.floor(this.sensor.min);
+          }
+          else {
+            return 0;
+          }
+        },
+
+        to: function() {
+          // If the difference between the max and min is less than 1, this is probably a mobo/RAM voltage.
+          if (this.sensor.max - this.sensor.min < 1) {
+            return Math.ceil(this.sensor.max);
+          }
+          else if (this.sensor.sensorType == 'Fan' || this.sensor.sensorType == 'Clock') {
+            return Math.ceil(this.sensor.max / 1000) * 1000;
+          }
+          // Default to 100. This works well for temperatures (0 to 100 C) and load (0% to 100%).
+          else {
+            return 100;
+          }
+        }
+      }
+    });
+
+    Vue.component('sensor-graph', {
+      props: ['history'],
+      template: '<canvas class="canvas" width=200 height=50></canvas>',
+      ready: function() {
+        this.chart = new Chart(this.$el, {
+          type: 'line',
+          data: {
+            labels: new Array(100),
+            datasets: [{
+              data: this.history.values,
+              pointRadius: 0,
+              borderColor: '#183251',
+              borderWidth: 1,
+              backgroundColor: '#edf3fa'
+            }]
+          },
+          options: {
+            animation: false,
+            responsive: false,
+            legend: { display: false },
+            hover: { mode: 'label' },
+            scales: {
+              xAxes: [{ display: false }]
+            }
+          }
+        });
+      },
+      watch: {
+        'history.values': function(history) {
+          this.chart.update();
+        }
+      }
+    });
+    // Set up the data binding library.
+    var vue = new Vue({
+      el: '#app',
+      data: { devices: devices }
+    });
+
+    setInterval(updateSensorData, 500);
+    updateSensorData();
+
+    // TODO: Is this needed? Maybe can be deleted.
+    class Device {
+      constructor(properties) {
+        Object.assign(this, properties);
+        this.sensors = [];
+      }
+    }
+
+    class Sensor {
+      constructor(properties) {
+        Object.assign(this, properties);
+        this.history = new SensorHistory();
+      }
+
+      get min() {
+        return this.history.min;
+      }
+
+      get max() {
+        return this.history.max;
+      }
+
+      get latest() {
+        return this.history.latest;
+      }
+
+      addValue(value, min, max) {
+        this.history.addValue(value, min, max);
+      }
+    }
+
+    class SensorHistory {
+      constructor() {
+        this.values = [];
+        this.min = 0;
+        this.max = 0;
+        this.maxPoints = 100;
+      }
+
+      get latest() {
+        return this.values[this.values.length - 1];
+      }
+
+      addValue(value, min, max) {
+        this.min = min;
+        this.max = max;
+        this.values.push(value);
+        // Make sure sensor history length is no more than the max number of points.
+        if (this.values.length > this.maxPoints) {
+          this.values.shift();
+        }
+      }
+    }
+
+    function updateSensorData() {
+      getSensorData()
+        .then((data) => {
+          window.rawData = data;
+          // Each entry in the data is a hardware device.
+          data.forEach((deviceToProcess) => {
+            // If the device doesn't exist in the devices list, create it.
+            var device = devices.find((device) => device.id == deviceToProcess.Identifier);
+            if (!device) {
+              device = new Device({
+                id: deviceToProcess.Identifier,
+                hardwareType: HardwareTypeArray[deviceToProcess.HardwareType],
+                name: deviceToProcess.Name
+              });
+
+              devices.push(device);
+            }
+
+            // Get all the sub-hardware sensors. This will only go one level deep because practically, only the
+            // motherboard will have a sub-hardware, which is the chipset that gives us the temperatures.
+            var subHardwareSensors = deviceToProcess.SubHardware.reduce((prev, curr) => {
+              curr.Sensors.forEach((sensor) => prev.push(sensor));
+              return prev;
+            }, []);
+            // Combine the device's sensors with the sub-hardware sensors.
+            var sensors = deviceToProcess.Sensors.concat(subHardwareSensors);
+            // Process each sensor.
+            sensors.forEach((sensorToProcess) => {
+              // If the sensor doesn't exist in the device's sensor list, create it.
+              var sensor = device.sensors.find((sensor) => sensor.id == sensorToProcess.Identifier);
+              if (!sensor) {
+                sensor = new Sensor({
+                  id: sensorToProcess.Identifier,
+                  sensorType: SensorTypeArray[sensorToProcess.SensorType],
+                  name: sensorToProcess.Name,
+                  hidden: sensorToProcess.IsDefaultHidden
+                });
+
+                device.sensors.push(sensor);
+              }
+
+              sensor.addValue(sensorToProcess.Value, sensorToProcess.Min, sensorToProcess.Max);
+            });
+          });
+        })
+        .catch((e) => {
+          // If this was a Javascript error, display the error in the console.
+          if (e instanceof Error) {
+            console.error(e);
+          }
+          // Otherwise, do nothing since this is an XHR error, and the console will automatically display it.
+        });
+    }
+  </script>
+</body>
+</html>
